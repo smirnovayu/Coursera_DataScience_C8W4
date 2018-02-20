@@ -1,0 +1,294 @@
+---
+title: "Peer-graded Assignment: Machine Learning"
+author: "Yulia Smirnova"
+date: "19 February 2018"
+output: html_document
+---
+
+## Task Description
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. Participants were asked to perform barbell lifts correctly and incorrectly in 5 different ways. The goal of this project is to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants and ***predict the manner in which they did the exercise*** (the "classe" variable). 
+
+More information is available from the website [here](http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har).
+
+## Exploring the Data 
+
+Let's download the data from the given source, and check its size.
+```{r download, cache=TRUE}
+library(data.table)
+download.file("http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv",
+              destfile ="pml-training.csv")
+download.file("http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv",
+              destfile ="pml-testing.csv")
+training_data <- read.csv("pml-training.csv")
+testing_data<-read.csv("pml-testing.csv")
+dim(training_data)
+dim(testing_data)
+```
+
+So the *training data* is a huge dataset with almost 20,000 lines, whereas the *test data* has only 20 lines.
+
+Let's look the data. Given that we have 53 columns the *str* command will generate a long list, but it is very usefull to have a good look at it. Additionally let's look at the class of the outcome variable *classe*. 
+
+```{r download2, cache=TRUE}
+str(training_data)
+class(training_data$classe)
+levels(training_data$classe)
+```
+
+So we see, mostly the data are numeric and integers, there seem to be many Na values, No's, etc. I.e. **data need cleaning**.
+
+As for the *classe* variable this is a factor with 5 outcomes: *A, B, C, D, E*.
+
+Let's do the cleaning in four steps:
+
+- remove all columns that have more than 80% of the values = Na
+
+- remove all columns that have more than 80% of the values empty
+
+- remove all columns that have more than 80% of the values = "no"
+
+- remove the first six columns, as they only providin the description of the case, thus don't need to be the part of the algorithm.
+
+
+```{r clean1,eval=TRUE}
+columns_check_NA <- apply(apply(training_data, 2, is.na),2,mean)
+NA_columns<-columns_check_NA>0.8
+training_data[NA_columns]<-NULL
+testing_data[NA_columns]<-NULL
+```
+
+```{r clean2,eval=TRUE}
+columns_check_EMPTY <- apply(training_data=="",2,mean)
+EMPTY_columns<-columns_check_EMPTY>0.8
+training_data[EMPTY_columns]<-NULL
+testing_data[EMPTY_columns]<-NULL
+```
+
+```{r clean3,eval=TRUE}
+columns_check_NO <- apply(training_data=="no",2,mean)
+NO_columns<-columns_check_NO>0.8
+training_data[NO_columns]<-NULL
+testing_data[NO_columns]<-NULL
+```
+
+```{r clean4,eval=TRUE}
+training_data[,1:6]<-NULL
+testing_data[,1:6]<-NULL
+```
+
+Lastly let's look at the near-zero-columns in the remaining dataset and at the possible ammount of the Na cells.
+
+
+```{r clean4b,eval=TRUE}
+suppressMessages(library(caret))
+nearZeroVar_training <- nearZeroVar(training_data, saveMetrics=TRUE)
+sum(nearZeroVar_training$nzv)
+
+max(is.na(training_data))
+```
+
+And it can be seen, that there are no near-zero-columns and absolutely no Na values left. So the dataset is now tidy
+
+But it is still worth to make the last check, i.e. to browse through the columns' names to select only those that contain the four key-words for the exercise type.
+
+
+
+```{r clean5,eval=TRUE}
+relevant_column <- grepl("belt|forearm|[^(fore)]arm|dumbbell", names(training_data))
+relevant_column
+```
+
+The last column is the *classe* column - the outcome, and the rest of the 52 columns are all relevant, basically this is the same output for four sensors: 52=4x13, i.e. we have the tidy data, with only relevant data (which we could still reduce, and thus possibly introduce bias, but will not do in this case) and can proceed to the machine learning part.
+
+
+## Visualizing the data 
+
+To finish up the data-exploring let's make two multi-panel plots. 
+
+First let's look for the correlation between the 13 predictors for each accelerometer. In case we see some strong correlation, we might consider removing some columns from the predictors list.
+
+```{r corr1,eval=TRUE,echo=FALSE,out.width = '90%'}
+res1 <- cor(training_data[,1:13])
+res2 <- cor(training_data[,14:26])
+res3 <- cor(training_data[,27:39])
+res4 <- cor(training_data[,40:52])
+suppressMessages(library(corrplot))
+par(mfrow=c(2,2))
+corrplot(res1, type = "upper", tl.col = "black", tl.srt = 45)
+corrplot(res2, type = "upper", tl.col = "black", tl.srt = 45)
+corrplot(res3, type = "upper", tl.col = "black", tl.srt = 45)
+corrplot(res4, type = "upper", tl.col = "black", tl.srt = 45)
+```
+
+Correlation matrix values are low for the arm and forearm sensors, the dumbbell values are somnewhat higher, but still rather insignificant, there are a couple of high correlation values in the belt sensor, but still not knowing more, I would prefer to leave the two-three predictors (out of 52) in the model.
+
+Let's also look at the points distribution of one of the 13 parammeters for all four sensors, for instance the *roll* parameter.
+
+
+```{r corr2,eval=TRUE,echo=FALSE}
+suppressMessages(library(ggplot2))
+suppressMessages(library(Rmisc))
+p1<-ggplot(training_data, aes(y=roll_belt, x=factor(classe, labels = c("A", "B","C","D","E")), fill=factor(classe)))+
+  geom_violin(colour="black")+
+  #geom_jitter(shape=16, position=position_jitter(0.2))+
+  xlab("classe") + ylab("roll_belt")
+
+p2<-ggplot(training_data, aes(y=roll_arm, x=factor(classe, labels = c("A", "B","C","D","E")), fill=factor(classe)))+
+  geom_violin(colour="black")+
+  #geom_jitter(shape=16, position=position_jitter(0.2))+
+  xlab("classe") + ylab("roll_arm")
+
+p3<-ggplot(training_data, aes(y=roll_forearm, x=factor(classe, labels = c("A", "B","C","D","E")), fill=factor(classe)))+
+  geom_violin(colour="black")+
+  #geom_jitter(shape=16, position=position_jitter(0.2))+
+  xlab("classe") + ylab("roll_forearm")
+
+p4<-ggplot(training_data, aes(y=roll_dumbbell, x=factor(classe, labels = c("A", "B","C","D","E")), fill=factor(classe)))+
+  geom_violin(colour="black")+
+  #geom_jitter(shape=16, position=position_jitter(0.2))+
+  xlab("classe") + ylab("roll_dumbbell")
+
+multiplot(p1, p2, p3, p4, cols=2)
+```
+
+We can see some clear separation in the violin plots, this might be good for the *rpart* method. 
+
+
+## Preparing machine learning 
+
+First let's divide the *training data* into two subsets - train (75%) and check (25%) - to make the cross validation.
+```{r split,eval=TRUE}
+set.seed(111)
+subset_train <- createDataPartition(training_data$classe, p=0.75)
+train_train <- training_data[subset_train[[1]],]
+train_check <- training_data[-subset_train[[1]],]
+```
+
+Let's try several algorithms from the lectures, namely  *rpart, gbm, nb, lda, rf*.
+No data preprocessing is performed here at the moment. 
+
+```{r ML,eval=TRUE, cache=TRUE}
+ML_rpart <- train(classe ~ ., data = train_train, method = "rpart")
+suppressMessages(library(gbm))
+ML_gbm   <- gbm(classe ~ . , data = train_train)
+ML_nb    <- train(classe ~ ., data = train_train, method = "naive_bayes")
+ML_lda   <- train(classe ~ ., data = train_train, method = "lda")
+suppressMessages(library(randomForest))
+ML_rf    <- randomForest(classe ~ . , data = train_train)
+```
+
+For the *rpart* method we can have a quick look at the obtained tree:
+```{r tree,eval=TRUE}
+suppressMessages(library(rattle))
+fancyRpartPlot(ML_rpart$finalModel)
+```
+
+Quite a small tree, which uses only 4 of the 52 input variables. 
+
+For all these five methods let't look at the out-of-sample error on the two subsets of the training data.
+
+```{r check_check,eval=TRUE, cache=TRUE,echo=FALSE}
+check_rpart <- predict(ML_rpart, train_check)
+check_gbm   <- predict(ML_gbm,   train_check, n.trees=100)
+reformat1   <- apply(check_gbm, 1, which.max)
+check_gbm   <- as.factor(colnames(check_gbm)[reformat1])
+check_nb    <- predict(ML_nb,    train_check)
+check_lda   <- predict(ML_lda,   train_check)
+check_rf    <- predict(ML_rf,    train_check)
+
+train_rpart <- predict(ML_rpart, train_train)
+train_gbm   <- predict(ML_gbm,   train_train, n.trees=100)
+reformat2   <- apply(train_gbm, 1, which.max)
+train_gbm   <- as.factor(colnames(train_gbm)[reformat2])
+train_nb    <- predict(ML_nb,    train_train)
+train_lda   <- predict(ML_lda,   train_train)
+train_rf    <- predict(ML_rf,    train_train)
+
+methods_names <- c("rpart", "gbm","nb","lda","rf")
+
+OOSE_TT <- c( confusionMatrix(train_rpart, train_train$classe)$overall[1],
+              confusionMatrix(train_gbm,   train_train$classe)$overall[1],
+              confusionMatrix(train_nb,    train_train$classe)$overall[1],
+              confusionMatrix(train_lda,   train_train$classe)$overall[1],
+              confusionMatrix(train_rf,    train_train$classe)$overall[1])
+
+
+OOSE_TC <- c( confusionMatrix(check_rpart, train_check$classe)$overall[1],
+              confusionMatrix(check_gbm,   train_check$classe)$overall[1],
+              confusionMatrix(check_nb,    train_check$classe)$overall[1],
+              confusionMatrix(check_lda,   train_check$classe)$overall[1],
+              confusionMatrix(check_rf,    train_check$classe)$overall[1])
+
+library(knitr)
+table1<-cbind(methods_names,Training_OSE=round(OOSE_TT,digits=3),CrossCheck_OSE=round(OOSE_TC,digits = 3))
+
+knitr::kable(table1)
+```
+
+It can be seen that for all five methods the diffence in the accuracy for the training subset of the training data and the cross-check subset is below 1%; both *rpart* and *gbm* are resulting in quite low accuracy of about 50% only, *lda* and *nb* are somewhat better with approximately 70% ad 75%, and *rf* method is on the top of the list with 99.7% accuracy on the cross-validation set.
+
+Before we try the algorithms on the pure test data let't quickly check, whether data preprocessing could make the result even better. Let's do it for the *rf* method, and for the *lda* that has the highest difference in the accuracy during the cross-check.
+
+```{r prepro,eval=TRUE, cache=TRUE,echo=FALSE}
+preProcess_train<-preProcess(train_train[,-ncol(train_train)], method = c("center", "scale"))
+pPt <- predict(preProcess_train, train_train[,-ncol(train_train)])
+pPt_full <- cbind(pPt,classe=train_train$classe)
+ML_rf_preprocess <- randomForest(classe ~ . , data = pPt_full)
+
+pPc <- predict(preProcess_train, train_check[,-ncol(train_check)])
+pPc_full <- cbind(pPc,classe=train_check$classe)
+train_rf_preprocess<- predict(ML_rf_preprocess, pPt_full)
+check_rf_preprocess<- predict(ML_rf_preprocess, pPc_full)
+
+ML_lda_preprocess <- train(classe ~ ., data = pPt_full, method = "lda")
+train_lda_preprocess<- predict(ML_lda_preprocess, pPt_full)
+check_lda_preprocess<- predict(ML_lda_preprocess, pPc_full)
+
+methods_names_PrePro <- c("lda","rf","lda_PrePro","rf_PrePro")
+
+OOSE_TT_PrePro <- c( confusionMatrix(train_lda,   train_train$classe)$overall[1],
+                     confusionMatrix(train_rf,    train_train$classe)$overall[1],
+                     confusionMatrix(train_lda_preprocess,    train_train$classe)$overall[1],
+                     confusionMatrix(train_rf_preprocess,    train_train$classe)$overall[1])
+
+
+OOSE_TC_PrePro <- c( confusionMatrix(check_lda,   train_check$classe)$overall[1],
+                     confusionMatrix(check_rf,    train_check$classe)$overall[1],
+                     confusionMatrix(check_lda_preprocess,    train_check$classe)$overall[1],
+                     confusionMatrix(check_rf_preprocess,    train_check$classe)$overall[1])
+
+table1_PrePro<-cbind(methods_names_PrePro,Training_OSE=round(OOSE_TT_PrePro,digits=3),CrossCheck_OSE=round(OOSE_TC_PrePro,digits = 3))
+knitr::kable(table1_PrePro)
+```
+
+Not much of a change, but also none was expected. The violin plots above, together with some similar plots for other prdicotrs now shown here, have shown little outliers, rather dense point clouds. Thus in this particular case preprocessing is not extremely beneficial.
+
+
+## Testing the model
+
+For the final test only the two best methods will be used: *rf* and *nb*. And the predictions given by them are shown in the table below.
+
+
+```{r ftest,eval=TRUE, cache=TRUE,echo=FALSE}
+test_nb   <-  predict(ML_nb,   testing_data)
+test_rf    <- predict(ML_rf,   testing_data)
+
+comparison<- test_nb==test_rf
+my_prediction<-data.frame("nb method" = test_nb, "rf method" = test_rf, "Comparison" = comparison)
+knitr::kable(my_prediction)
+```
+
+The two methods give the same prediction in 
+```{r diff_N,eval=TRUE, echo=FALSE}
+sum(comparison)
+```
+ out of  20 cases and given the OSE on the cross-validation set the results from the random forest method are to be used, since they are expected to predict the results better.
+ 
+
+## Summary
+
+Out of the five methods that were tested - *rpart, gbm, nb, lda, rf* - for the data in question the least out-of-sample error is given by the ***random forest***, and it is 99.7% correct on the cross-check data. The prediction for the test dataset is shown in the table above.
+
+The second best method is ***nb***, it is correct 75% of times during the cross-validation, and its prediction for the test data differs from that given by the random forest in 6 out of 20 cases.
+
